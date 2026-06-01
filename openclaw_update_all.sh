@@ -18,7 +18,6 @@ TARGET_VERSION=""
 TS="$(date -u +%Y%m%d-%H%M%S)"
 LOG_FILE="${LOG_DIR}/update-${TS}.log"
 
-NPM_GLOBAL_PREFIX=""
 PATH_OPENCLAW_BIN=""
 PATH_OPENCLAW_REAL=""
 UNIT_EXECSTART_LINE=""
@@ -71,7 +70,6 @@ discover_cli_layout(){
   need npm
   need python3
 
-  NPM_GLOBAL_PREFIX="$(npm prefix -g 2>/dev/null || true)"
   PATH_OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
   PATH_OPENCLAW_REAL="$(realpath_safe "$PATH_OPENCLAW_BIN")"
   UNIT_EXECSTART_LINE="$(get_unit_execstart_line)"
