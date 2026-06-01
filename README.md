@@ -1,38 +1,32 @@
 # OpenClaw Update Script
 
-Safe update and rollback helper for self-hosted OpenClaw setups.
+Production update and rollback helper for self-hosted OpenClaw gateway setups.
 
-This repository contains `openclaw_update_all.sh`, a practical update script that helps you:
-- run a precheck before update
-- update OpenClaw to the latest or to a specific target version
-- verify post-update health
-- rollback to the previous working version if needed
-- detect CLI and gateway version drift
-- keep a local backup snapshot before update
+The script is designed to update the real OpenClaw contour used by the user systemd gateway service, not a random `openclaw` binary found through `PATH`.
 
-## What this script is for
+## What It Supports
 
-This script is designed for operators who want a more careful update path than a blind `npm i -g openclaw@latest`.
+Supported Linux user-systemd npm installs:
 
-It focuses on a few important things:
-- checking the real installed CLI path
-- checking version sync between CLI and gateway unit
-- stopping the gateway cleanly before update
-- creating a backup of `~/.openclaw`
-- installing the target version
-- starting the gateway again
-- running smoke and verify checks
-- giving you a rollback path if something breaks
+- system npm prefix: `/usr`
+- system npm prefix: `/usr/local`
+- current user npm prefix, including setups like `~/.npm-global`
 
-## Repository contents
+Intentionally not supported:
 
-- `openclaw_update_all.sh` - the update, verify and rollback script
-- `INSTRUCTION.md` - operator guide with step-by-step usage
+- git/dev checkouts
+- custom wrapper units
+- non-systemd service managers
+
+If the gateway unit does not look like a supported npm/systemd contour, `precheck` stops before update.
+
+## Repository Contents
+
+- `openclaw_update_all.sh` - update, verify and rollback script
+- `INSTRUCTION.md` - operator guide
 - `LICENSE` - MIT
 
-## Quick start
-
-Download or clone the repository:
+## Quick Start
 
 ```bash
 git clone https://github.com/neural-max-ai/openclaw-update-script.git
@@ -40,22 +34,22 @@ cd openclaw-update-script
 chmod +x openclaw_update_all.sh
 ```
 
-Run precheck first:
+Run precheck:
 
 ```bash
 ./openclaw_update_all.sh precheck
 ```
 
-Update to the latest resolved version:
+Update to latest resolved npm version:
 
 ```bash
 ./openclaw_update_all.sh update
 ```
 
-Update to a specific version:
+Update to a pinned version:
 
 ```bash
-./openclaw_update_all.sh update 2026.5.22
+./openclaw_update_all.sh update 2026.5.28
 ```
 
 Verify after update:
@@ -64,151 +58,51 @@ Verify after update:
 ./openclaw_update_all.sh verify
 ```
 
-Rollback if needed:
+Rollback manually if needed:
 
 ```bash
 ./openclaw_update_all.sh rollback
 ```
 
-## Supported flow
+## Safety Features
 
-### 1. Precheck
+- Resolves the active contour from `openclaw-gateway.service`.
+- Verifies CLI version and gateway `OPENCLAW_SERVICE_VERSION` sync.
+- Creates a backup snapshot before update.
+- Writes rollback state with shell-safe quoting.
+- Uses a lock file to avoid parallel update/rollback runs.
+- Checks Node.js, npm, npm registry access and free disk space before install.
+- Requires available `sudo -n true` when `ASSUME_YES=1` is used for system installs.
+- Runs `openclaw doctor --fix --non-interactive --yes` during verify/smoke checks.
+- Restores `~/.openclaw` through a staging directory during rollback.
+- Removes rollback staging trash after a successful rollback.
 
-```bash
-./openclaw_update_all.sh precheck
-```
+## Target Version Resolution
 
-What it checks:
-- npm availability
-- OpenClaw CLI path truth
-- current update target resolution
-- current gateway service state
-- disk and memory snapshot
-- npm global install access
-- CLI vs gateway unit version drift
-- gateway ExecStart path drift
+Priority:
 
-### 2. Update
+1. Explicit version from `update YYYY.M.P`.
+2. `npm view openclaw version`.
+3. Fallback parsing from `openclaw update status`.
 
-```bash
-./openclaw_update_all.sh update
-```
-
-Or pin a target version:
+## Environment Options
 
 ```bash
-./openclaw_update_all.sh update 2026.5.22
+ASSUME_YES=1       # non-interactive confirmation
+MIN_FREE_MB=1024   # minimum free disk space for HOME/install prefix
+MIN_NODE_MAJOR=20  # minimum Node.js major version
 ```
 
-What it does:
-- runs precheck
-- stops `openclaw-gateway`
-- creates a backup under `~/openclaw-backup/`
-- installs the target version via npm
-- checks CLI truth and version sync
-- auto-remediates gateway unit drift when possible
-- restarts the gateway
-- runs smoke checks
+## Logs And Backups
 
-### 3. Verify
+- Logs: `~/openclaw-backup/logs/update-*.log`
+- Backup snapshots: `~/openclaw-backup/<timestamp>/`
+- Rollback state: `~/openclaw-backup/last-update-state.env`
 
-```bash
-./openclaw_update_all.sh verify
-```
+## Rollback Policy
 
-What it verifies:
-- gateway status
-- `openclaw status --deep`
-- `openclaw health --json`
-- CLI path truth
-- CLI and gateway unit version sync
-- gateway ExecStart path truth
-
-### 4. Rollback
+Rollback is intentionally manual. If update or verify fails, inspect the log first, then run:
 
 ```bash
 ./openclaw_update_all.sh rollback
 ```
-
-What it does:
-- restores the previous OpenClaw version recorded during update
-- restores `~/.openclaw` from backup if available
-- rechecks CLI truth, version sync and gateway path
-- restarts gateway and runs smoke checks
-
-## Update to a specific target version
-
-You can update to a specific OpenClaw version like this:
-
-```bash
-./openclaw_update_all.sh update 2026.5.22
-```
-
-Version format must match:
-
-```text
-YYYY.M.P
-```
-
-Example:
-- `2026.5.22`
-- `2026.4.10`
-
-If you do not pass a version, the script tries to resolve the target version from:
-1. `openclaw update status`
-2. `npm view openclaw version`
-
-## Non-interactive mode
-
-For automation or remote sessions:
-
-```bash
-ASSUME_YES=1 ./openclaw_update_all.sh update 2026.5.22
-```
-
-## Logs and backups
-
-Logs are stored in:
-
-```bash
-~/openclaw-backup/logs/
-```
-
-Backups are stored in:
-
-```bash
-~/openclaw-backup/
-```
-
-The script also keeps a state file for rollback:
-
-```bash
-~/openclaw-backup/last-update-state.env
-```
-
-## Important notes
-
-- Run `precheck` before every real update.
-- Prefer doing updates in a maintenance window.
-- Do not skip verify after update.
-- If health, gateway, status, or chat behavior look wrong, rollback early instead of stacking more changes.
-- This script assumes a user-level `openclaw-gateway` systemd service.
-
-## Good operator sequence
-
-```bash
-./openclaw_update_all.sh precheck
-./openclaw_update_all.sh update 2026.5.22
-./openclaw_update_all.sh verify
-```
-
-If anything looks broken:
-
-```bash
-./openclaw_update_all.sh rollback
-./openclaw_update_all.sh verify
-```
-
-## License
-
-MIT

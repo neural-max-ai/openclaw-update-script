@@ -2,15 +2,16 @@
 
 ## Purpose
 
-This guide explains how to use `openclaw_update_all.sh` safely:
-- precheck before update
-- update to latest or to a specific version
-- verify after update
-- rollback if something goes wrong
+Use `openclaw_update_all.sh` to update a self-hosted OpenClaw gateway contour safely:
 
----
+- `precheck` before update
+- `update` to latest or pinned version
+- `verify` after update
+- manual `rollback` when needed
 
-## 1. Prepare the script
+The script updates the OpenClaw package that backs the active `openclaw-gateway.service`.
+
+## 1. Prepare
 
 ```bash
 git clone https://github.com/neural-max-ai/openclaw-update-script.git
@@ -18,186 +19,107 @@ cd openclaw-update-script
 chmod +x openclaw_update_all.sh
 ```
 
-If you already downloaded just the script:
-
-```bash
-chmod +x openclaw_update_all.sh
-```
-
----
-
-## 2. Precheck before update
-
-Always start here.
+## 2. Precheck
 
 ```bash
 ./openclaw_update_all.sh precheck
 ```
 
-### What the precheck does
-- confirms required commands exist
-- detects the actual OpenClaw CLI binary in use
-- resolves target update version
-- checks gateway service state
-- checks disk and memory state
-- checks npm global write access
-- checks CLI vs gateway unit version sync
-- checks if gateway ExecStart points to the correct CLI
+Precheck verifies:
 
-### If precheck warns about drift
-The script can auto-remediate some drift during `update`, but if precheck is clearly broken, do not rush into production update blindly.
+- required commands
+- active OpenClaw gateway contour
+- target version
+- install prefix
+- Node.js/npm/npm registry access
+- free disk space
+- CLI vs gateway unit version sync
+- gateway ExecStart shape
 
----
+Do not continue if precheck fails. Fix the reported problem first.
 
-## 3. Update to latest available target
+## 3. Update
+
+Latest resolved npm version:
 
 ```bash
 ./openclaw_update_all.sh update
 ```
 
-This will:
-1. run precheck
-2. stop `openclaw-gateway`
-3. create backup of `~/.openclaw`
-4. install target version
-5. check CLI truth and version sync
-6. remediate gateway drift if needed
-7. restart gateway
-8. run smoke checks
-
----
-
-## 4. Update to a specific target version
-
-If you want a pinned version, use:
+Pinned version:
 
 ```bash
-./openclaw_update_all.sh update 2026.5.22
+./openclaw_update_all.sh update 2026.5.28
 ```
 
-This is useful when:
-- you want a known stable version
-- you do not want the newest release yet
-- you are aligning several hosts to the same version
-- you are rolling back forward to a chosen target instead of latest
+Update flow:
 
-### Version format
-Use:
+1. Run precheck.
+2. Ask for confirmation unless `ASSUME_YES=1`.
+3. Backup `~/.openclaw`, the gateway unit and recent gateway logs.
+4. Install `openclaw@TARGET_VERSION` into the detected install prefix.
+5. Refresh gateway unit with `openclaw gateway install --force`.
+6. Restart `openclaw-gateway.service`.
+7. Run smoke checks, including `openclaw doctor --fix --non-interactive --yes`.
+8. Verify CLI/unit/gateway truth.
 
-```text
-YYYY.M.P
-```
-
-Example:
-- `2026.5.22`
-- `2026.4.10`
-
----
-
-## 5. Verify after update
-
-After update, do not stop at a green install output.
-Run:
+## 4. Verify
 
 ```bash
 ./openclaw_update_all.sh verify
 ```
 
-### What verify checks
+Verify checks:
+
+- gateway service is active
 - `openclaw gateway status`
+- `openclaw doctor --fix --non-interactive --yes`
 - `openclaw status --deep`
-- `openclaw health --json`
-- CLI path truth
-- CLI version sync with gateway unit
-- gateway ExecStart path truth
+- `openclaw channels status --probe --timeout 30000`
+- CLI/unit/gateway version and contour sync
 
-### Recommended live validation after verify
-Also check manually:
-- `openclaw --version`
-- `openclaw status`
-- one real message in chat
-- one small tool action if relevant
-- one cron test if the host depends on cron jobs
-
----
-
-## 6. Rollback if something breaks
-
-If update completed but the system is not trustworthy, rollback early.
+## 5. Rollback
 
 ```bash
 ./openclaw_update_all.sh rollback
 ```
 
-### Rollback does
-- reinstalls the previous OpenClaw version recorded during the last update
-- restores `~/.openclaw` from backup if available
-- restarts gateway
-- reruns truth and smoke checks
+Rollback uses `~/openclaw-backup/last-update-state.env`.
 
-### Good rollback flow
-```bash
-./openclaw_update_all.sh rollback
-./openclaw_update_all.sh verify
-```
+Rollback flow:
 
----
+1. Ask for confirmation.
+2. Reinstall previous OpenClaw version.
+3. Restore `~/.openclaw` from backup through a staging directory.
+4. Refresh and restart the gateway unit.
+5. Run smoke and truth checks.
+6. Remove rollback staging trash after success.
 
-## 7. Non-interactive mode
+Rollback is manual by design. Inspect logs before running it.
 
-For automation or when you already know you want to proceed:
+## 6. Non-Interactive Mode
 
 ```bash
-ASSUME_YES=1 ./openclaw_update_all.sh update 2026.5.22
+ASSUME_YES=1 ./openclaw_update_all.sh update
 ```
 
-You can also use it with rollback:
+For system installs, non-interactive mode requires working passwordless/cached sudo:
 
 ```bash
-ASSUME_YES=1 ./openclaw_update_all.sh rollback
+sudo -n true
 ```
 
----
+If sudo would prompt for a password, precheck fails before install.
 
-## 8. Where logs and backups are stored
+## 7. Logs
 
-### Logs
 ```bash
-~/openclaw-backup/logs/
+ls -lt ~/openclaw-backup/logs/
+tail -n 200 ~/openclaw-backup/logs/update-*.log
 ```
 
-### Backups and state
+Backups are stored in:
+
 ```bash
-~/openclaw-backup/
+~/openclaw-backup/<timestamp>/
 ```
-
-### Rollback state file
-```bash
-~/openclaw-backup/last-update-state.env
-```
-
----
-
-## 9. Safe operator sequence
-
-### Normal update
-```bash
-./openclaw_update_all.sh precheck
-./openclaw_update_all.sh update 2026.5.22
-./openclaw_update_all.sh verify
-```
-
-### If anything looks wrong
-```bash
-./openclaw_update_all.sh rollback
-./openclaw_update_all.sh verify
-```
-
----
-
-## 10. Practical advice
-
-- Update in a calm window, not in the middle of active work.
-- Prefer pinned versions when stability matters more than novelty.
-- If CLI version, gateway version, or chat behavior look inconsistent, treat it as drift and verify before trusting the host.
-- Do not keep stacking fixes after a suspicious update. Roll back first, then inspect.

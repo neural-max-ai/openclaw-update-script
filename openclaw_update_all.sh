@@ -17,6 +17,8 @@ ASSUME_YES="${ASSUME_YES:-0}"
 TARGET_VERSION=""
 TS="$(date -u +%Y%m%d-%H%M%S)"
 LOG_FILE="${LOG_DIR}/update-${TS}.log"
+MIN_FREE_MB="${MIN_FREE_MB:-1024}"
+MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-20}"
 
 PATH_OPENCLAW_BIN=""
 PATH_OPENCLAW_REAL=""
@@ -29,7 +31,9 @@ OPENCLAW_BIN=""
 OPENCLAW_REAL=""
 INSTALL_SCOPE=""
 INSTALL_PREFIX=""
+INSTALL_USES_SUDO="0"
 UNIT_FRAGMENT_PATH=""
+ROLLBACK_PREVIOUS_OPENCLAW_DIR=""
 
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG_FILE"; }
 fail(){ log "ERROR: $*"; exit 1; }
@@ -56,6 +60,10 @@ realpath_safe(){
 
 validate_version(){
   [[ "${1:-}" =~ ^[0-9]{4}\.[0-9]+\.[0-9]+$ ]]
+}
+
+quote_env_value(){
+  printf '%q' "${1:-}"
 }
 
 get_unit_fragment_path(){ systemctl --user show -p FragmentPath --value "$SERVICE_NAME" 2>/dev/null || true; }
@@ -112,21 +120,34 @@ PY
     fail "Cannot resolve working OpenClaw contour from systemd unit or PATH"
   fi
 
-  case "$OPENCLAW_REAL" in
-    /usr/lib/node_modules/openclaw/*)
-      INSTALL_SCOPE="system"
-      INSTALL_PREFIX="/usr"
-      OPENCLAW_BIN="/usr/bin/openclaw"
-      ;;
-    /usr/local/lib/node_modules/openclaw/*)
-      INSTALL_SCOPE="system"
-      INSTALL_PREFIX="/usr/local"
-      OPENCLAW_BIN="/usr/local/bin/openclaw"
-      ;;
-    *)
-      fail "Unsupported working contour for production updater: ${OPENCLAW_REAL}"
-      ;;
-  esac
+  INSTALL_SCOPE=""
+  INSTALL_PREFIX=""
+  INSTALL_USES_SUDO="0"
+  OPENCLAW_BIN=""
+
+  if [[ "$OPENCLAW_REAL" == /usr/lib/node_modules/openclaw/* ]]; then
+    INSTALL_SCOPE="system"
+    INSTALL_PREFIX="/usr"
+    INSTALL_USES_SUDO="1"
+    OPENCLAW_BIN="/usr/bin/openclaw"
+  elif [[ "$OPENCLAW_REAL" == /usr/local/lib/node_modules/openclaw/* ]]; then
+    INSTALL_SCOPE="system"
+    INSTALL_PREFIX="/usr/local"
+    INSTALL_USES_SUDO="1"
+    OPENCLAW_BIN="/usr/local/bin/openclaw"
+  elif [[ -n "$NPM_GLOBAL_ROOT" && "$OPENCLAW_REAL" == "$NPM_GLOBAL_ROOT"/openclaw/* ]]; then
+    INSTALL_SCOPE="user"
+    INSTALL_PREFIX="$NPM_GLOBAL_PREFIX"
+    INSTALL_USES_SUDO="0"
+    OPENCLAW_BIN="${NPM_GLOBAL_BIN_DIR}/openclaw"
+  elif [[ "$OPENCLAW_REAL" == "${HOME}/.npm-global/lib/node_modules/openclaw/"* ]]; then
+    INSTALL_SCOPE="user"
+    INSTALL_PREFIX="${HOME}/.npm-global"
+    INSTALL_USES_SUDO="0"
+    OPENCLAW_BIN="${INSTALL_PREFIX}/bin/openclaw"
+  else
+    fail "Unsupported working contour for production updater: ${OPENCLAW_REAL}"
+  fi
 
   [[ -x "$OPENCLAW_BIN" ]] || fail "Expected canonical CLI not found: ${OPENCLAW_BIN}"
 }
@@ -176,18 +197,18 @@ resolve_target_version(){
     return 0
   fi
 
-  status_out="$(oc update status 2>/dev/null || true)"
-  parsed="$(printf '%s\n' "$status_out" | grep -Eo '([0-9]{4}\.[0-9]+\.[0-9]+)' | tail -n1 || true)"
-  if [[ -n "$parsed" ]]; then
-    TARGET_VERSION="$parsed"
-    log "Target version resolved from 'openclaw update status': ${TARGET_VERSION}"
-    return 0
-  fi
-
   npm_latest="$(npm view openclaw version 2>/dev/null || true)"
   if validate_version "$npm_latest"; then
     TARGET_VERSION="$npm_latest"
     log "Target version resolved from 'npm view openclaw version': ${TARGET_VERSION}"
+    return 0
+  fi
+
+  status_out="$(oc update status 2>/dev/null || true)"
+  parsed="$(printf '%s\n' "$status_out" | grep -Eo '([0-9]{4}\.[0-9]+\.[0-9]+)' | tail -n1 || true)"
+  if [[ -n "$parsed" ]]; then
+    TARGET_VERSION="$parsed"
+    log "Target version resolved from fallback 'openclaw update status': ${TARGET_VERSION}"
     return 0
   fi
 
@@ -251,12 +272,21 @@ check_version_sync(){
 
 check_install_target(){
   discover_cli_layout
-  [[ "$INSTALL_SCOPE" == "system" ]] || fail "Only system install is supported by this production updater"
-  need sudo
-  if sudo -n true 2>/dev/null; then
-    log "Install target check OK: system install via ${INSTALL_PREFIX} (sudo cached)"
+  [[ -n "$INSTALL_PREFIX" ]] || fail "Install prefix is unresolved"
+
+  if [[ "$INSTALL_SCOPE" == "system" ]]; then
+    need sudo
+    if sudo -n true 2>/dev/null; then
+      log "Install target check OK: system install via ${INSTALL_PREFIX} (sudo cached)"
+    elif [[ "$ASSUME_YES" == "1" ]]; then
+      fail "ASSUME_YES=1 requires passwordless/cached sudo for system install"
+    else
+      log "Install target check: system install via ${INSTALL_PREFIX} (sudo will prompt if needed)"
+    fi
   else
-    log "Install target check: system install via ${INSTALL_PREFIX} (sudo will prompt if needed)"
+    [[ -d "$INSTALL_PREFIX" ]] || fail "User install prefix does not exist: ${INSTALL_PREFIX}"
+    [[ -w "$INSTALL_PREFIX" ]] || fail "User install prefix is not writable: ${INSTALL_PREFIX}"
+    log "Install target check OK: user install via ${INSTALL_PREFIX}"
   fi
   return 0
 }
@@ -264,9 +294,39 @@ check_install_target(){
 run_npm_install(){
   local version="$1"
   discover_cli_layout
-  [[ "$INSTALL_SCOPE" == "system" ]] || fail "Only system install is supported"
-  log "npm install target: system (/usr)"
-  sudo env PATH="$PATH" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
+  if [[ "$INSTALL_USES_SUDO" == "1" ]]; then
+    log "npm install target: ${INSTALL_SCOPE} (${INSTALL_PREFIX})"
+    sudo env PATH="$PATH" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
+  else
+    log "npm install target: ${INSTALL_SCOPE} (${INSTALL_PREFIX})"
+    env PATH="$PATH" NPM_CONFIG_PREFIX="$INSTALL_PREFIX" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
+  fi
+}
+
+check_runtime_requirements(){
+  local node_ver node_major home_free prefix_free
+  need node
+  need npm
+
+  node_ver="$(node --version 2>/dev/null | sed 's/^v//' || true)"
+  node_major="${node_ver%%.*}"
+  [[ "$node_major" =~ ^[0-9]+$ ]] || fail "Cannot detect Node.js major version"
+  (( node_major >= MIN_NODE_MAJOR )) || fail "Node.js ${node_ver} is too old; need >= ${MIN_NODE_MAJOR}.x"
+
+  npm --version >/dev/null || fail "npm is not usable"
+  npm view openclaw version >/dev/null || fail "npm registry is not reachable for package openclaw"
+
+  home_free="$(df -Pm "$HOME" | awk 'NR==2 {print $4}')"
+  [[ "$home_free" =~ ^[0-9]+$ ]] || fail "Cannot detect free disk space for HOME"
+  (( home_free >= MIN_FREE_MB )) || fail "Not enough free disk space on HOME: ${home_free}MB < ${MIN_FREE_MB}MB"
+
+  if [[ -n "$INSTALL_PREFIX" && -d "$INSTALL_PREFIX" ]]; then
+    prefix_free="$(df -Pm "$INSTALL_PREFIX" | awk 'NR==2 {print $4}')"
+    [[ "$prefix_free" =~ ^[0-9]+$ ]] || fail "Cannot detect free disk space for install prefix"
+    (( prefix_free >= MIN_FREE_MB )) || fail "Not enough free disk space on install prefix: ${prefix_free}MB < ${MIN_FREE_MB}MB"
+  fi
+
+  log "Runtime requirements OK: node=${node_ver} npm=$(npm --version) min_free_mb=${MIN_FREE_MB}"
 }
 
 ensure_gateway_active(){
@@ -280,9 +340,10 @@ ensure_gateway_active(){
 }
 
 smoke_checks(){
-  log "Smoke checks: service active + gateway status + deep status + channel probe"
+  log "Smoke checks: service active + gateway status + doctor fix + deep status + channel probe"
   ensure_gateway_active "smoke checks"
   oc gateway status | tee -a "$LOG_FILE" >/dev/null
+  oc doctor --fix --non-interactive --yes | tee -a "$LOG_FILE" >/dev/null
   oc status --deep | tee -a "$LOG_FILE" >/dev/null
   oc channels status --probe --timeout 30000 | tee -a "$LOG_FILE" >/dev/null
   journalctl --user -u "$SERVICE_NAME" -n 120 --no-pager | tee -a "$LOG_FILE" >/dev/null || true
@@ -293,6 +354,7 @@ verify_post_update(){
   ensure_gateway_active "verify"
   oc --version | tee -a "$LOG_FILE" >/dev/null
   oc gateway status | tee -a "$LOG_FILE" >/dev/null
+  oc doctor --fix --non-interactive --yes | tee -a "$LOG_FILE" >/dev/null
   oc status --deep | tee -a "$LOG_FILE" >/dev/null
   oc channels status --probe --timeout 30000 | tee -a "$LOG_FILE" >/dev/null
   check_cli_truth || fail "Verify failed: CLI path truth mismatch"
@@ -307,24 +369,24 @@ backup_state(){
   cp -a "${HOME}/.openclaw" "$snap_dir/" || true
   systemctl --user cat "$SERVICE_NAME" >"${snap_dir}/${SERVICE_NAME}.unit.txt" || true
   journalctl --user -u "$SERVICE_NAME" -n 300 --no-pager >"${snap_dir}/gateway.log" || true
-  cat >"$STATE_FILE" <<EOF_STATE
-TS=${TS}
-BACKUP_DIR=${snap_dir}
-PREV_VERSION=$(get_cli_version)
-TARGET_VERSION=${TARGET_VERSION}
-CANONICAL_OPENCLAW_BIN=${OPENCLAW_BIN}
-CANONICAL_OPENCLAW_REAL=${OPENCLAW_REAL}
-PATH_OPENCLAW_BIN=${PATH_OPENCLAW_BIN}
-UNIT_OPENCLAW_ENTRY=${UNIT_OPENCLAW_ENTRY}
-UNIT_OPENCLAW_REAL=${UNIT_OPENCLAW_REAL}
-INSTALL_SCOPE=${INSTALL_SCOPE}
-INSTALL_PREFIX=${INSTALL_PREFIX}
-EOF_STATE
+  {
+    printf 'TS=%s\n' "$(quote_env_value "$TS")"
+    printf 'BACKUP_DIR=%s\n' "$(quote_env_value "$snap_dir")"
+    printf 'PREV_VERSION=%s\n' "$(quote_env_value "$(get_cli_version)")"
+    printf 'TARGET_VERSION=%s\n' "$(quote_env_value "$TARGET_VERSION")"
+    printf 'CANONICAL_OPENCLAW_BIN=%s\n' "$(quote_env_value "$OPENCLAW_BIN")"
+    printf 'CANONICAL_OPENCLAW_REAL=%s\n' "$(quote_env_value "$OPENCLAW_REAL")"
+    printf 'PATH_OPENCLAW_BIN=%s\n' "$(quote_env_value "$PATH_OPENCLAW_BIN")"
+    printf 'UNIT_OPENCLAW_ENTRY=%s\n' "$(quote_env_value "$UNIT_OPENCLAW_ENTRY")"
+    printf 'UNIT_OPENCLAW_REAL=%s\n' "$(quote_env_value "$UNIT_OPENCLAW_REAL")"
+    printf 'INSTALL_SCOPE=%s\n' "$(quote_env_value "$INSTALL_SCOPE")"
+    printf 'INSTALL_PREFIX=%s\n' "$(quote_env_value "$INSTALL_PREFIX")"
+  } >"$STATE_FILE"
   log "Backup completed: ${snap_dir}"
 }
 
 precheck(){
-  need npm; need systemctl; need journalctl; need sed; need grep; need readlink; need df; need free; need tee; need flock
+  need npm; need systemctl; need journalctl; need sed; need grep; need readlink; need df; need free; need tee; need flock; need awk
   discover_cli_layout
   resolve_target_version
   log "=== PRECHECK ==="
@@ -337,6 +399,7 @@ precheck(){
   free -h | tee -a "$LOG_FILE" >/dev/null
   ensure_runtime_truth
   check_install_target
+  check_runtime_requirements
   check_cli_truth || fail "Precheck failed: working contour mismatch"
   check_version_sync || log "Precheck warning: CLI/unit version drift detected"
   check_gateway_truth || fail "Precheck failed: gateway unit is not the expected production contour"
@@ -382,14 +445,26 @@ do_rollback(){
   confirm "Rollback to ${PREV_VERSION}?" || fail "Cancelled"
 
   discover_cli_layout
-  [[ "$INSTALL_SCOPE" == "system" ]] || fail "Rollback supports only system install"
+  check_install_target
+  check_runtime_requirements
 
   log "Step: reinstall previous version ${PREV_VERSION}"
   run_npm_install "$PREV_VERSION"
 
   if [[ -d "${BACKUP_DIR:-}" && -d "${BACKUP_DIR}/.openclaw" ]]; then
-    rm -rf "${HOME}/.openclaw"
-    cp -a "${BACKUP_DIR}/.openclaw" "${HOME}/.openclaw"
+    local restore_tmp
+    restore_tmp="${BACKUP_ROOT}/restore-openclaw-${TS}"
+    ROLLBACK_PREVIOUS_OPENCLAW_DIR="${BACKUP_ROOT}/before-rollback-openclaw-${TS}"
+    rm -rf "$restore_tmp" "$ROLLBACK_PREVIOUS_OPENCLAW_DIR"
+    cp -a "${BACKUP_DIR}/.openclaw" "$restore_tmp"
+    [[ -d "$restore_tmp" ]] || fail "Rollback restore staging failed: ${restore_tmp}"
+    if [[ -d "${HOME}/.openclaw" ]]; then
+      mv "${HOME}/.openclaw" "$ROLLBACK_PREVIOUS_OPENCLAW_DIR"
+    fi
+    mv "$restore_tmp" "${HOME}/.openclaw"
+    log "Restored ~/.openclaw from backup using atomic directory swap"
+  else
+    log "Rollback warning: backup dir missing or incomplete, config restore skipped"
   fi
 
   oc gateway install --force | tee -a "$LOG_FILE" >/dev/null
@@ -401,6 +476,11 @@ do_rollback(){
   check_cli_truth || fail "Final CLI truth check failed after rollback"
   check_version_sync || fail "Final version sync check failed after rollback"
   check_gateway_truth || fail "Final gateway truth check failed after rollback"
+
+  if [[ -n "$ROLLBACK_PREVIOUS_OPENCLAW_DIR" && -d "$ROLLBACK_PREVIOUS_OPENCLAW_DIR" ]]; then
+    rm -rf "$ROLLBACK_PREVIOUS_OPENCLAW_DIR"
+    log "Rollback cleanup removed previous ~/.openclaw staging: ${ROLLBACK_PREVIOUS_OPENCLAW_DIR}"
+  fi
 
   log "Rollback SUCCESS -> ${PREV_VERSION}"
 }
@@ -419,6 +499,8 @@ Examples:
 
 Options:
   ASSUME_YES=1   non-interactive confirmation
+  MIN_FREE_MB=1024
+  MIN_NODE_MAJOR=20
 
 Logs:
   ${LOG_DIR}/update-*.log
