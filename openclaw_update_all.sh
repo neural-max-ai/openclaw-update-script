@@ -19,7 +19,10 @@ TS="$(date -u +%Y%m%d-%H%M%S)"
 LOG_FILE="${LOG_DIR}/update-${TS}.log"
 
 NPM_GLOBAL_PREFIX=""
+# Kept in logs/diagnostics for older v4 flow; ShellCheck sees only assignments here.
+# shellcheck disable=SC2034
 NPM_GLOBAL_ROOT=""
+# shellcheck disable=SC2034
 NPM_GLOBAL_BIN_DIR=""
 PATH_OPENCLAW_BIN=""
 PATH_OPENCLAW_REAL=""
