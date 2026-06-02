@@ -19,6 +19,7 @@ TS="$(date -u +%Y%m%d-%H%M%S)"
 LOG_FILE="${LOG_DIR}/update-${TS}.log"
 MIN_FREE_MB="${MIN_FREE_MB:-1024}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-20}"
+PARTIAL_SUCCESS_EXIT_CODE=20
 
 PATH_OPENCLAW_BIN=""
 PATH_OPENCLAW_REAL=""
@@ -74,6 +75,22 @@ get_unit_service_version(){
 }
 get_unit_execstart_line(){
   systemctl --user cat "$SERVICE_NAME" 2>/dev/null | sed -n 's/^ExecStart=//p' | head -n1 || true
+}
+
+run_and_capture(){
+  local capture_file="$1"
+  shift
+  set +e
+  "$@" 2>&1 | tee -a "$LOG_FILE" "$capture_file" >/dev/null
+  local cmd_status=$?
+  set -e
+  return "$cmd_status"
+}
+
+smoke_output_has_gateway_failure(){
+  local capture_file="$1"
+  [[ -f "$capture_file" ]] || return 1
+  grep -E 'Connectivity probe failed|RPC probe failed|ECONNREFUSED|Gateway port is not listening' "$capture_file" >/dev/null
 }
 
 init_install_target_from_real(){
@@ -363,13 +380,25 @@ ensure_gateway_active(){
 }
 
 smoke_checks(){
+  local smoke_capture
+  local step_failed=0
   log "Smoke checks: service active + gateway status + doctor fix + deep status + channel probe"
   ensure_gateway_active "smoke checks"
-  oc gateway status | tee -a "$LOG_FILE" >/dev/null
-  oc doctor --fix --non-interactive --yes | tee -a "$LOG_FILE" >/dev/null
-  oc status --deep | tee -a "$LOG_FILE" >/dev/null
-  oc channels status --probe --timeout 30000 | tee -a "$LOG_FILE" >/dev/null
+
+  smoke_capture="$(mktemp "${BACKUP_ROOT}/smoke-${TS}-XXXXXX.log")"
+
+  run_and_capture "$smoke_capture" oc gateway status || step_failed=1
+  run_and_capture "$smoke_capture" oc doctor --fix --non-interactive --yes || step_failed=1
+  run_and_capture "$smoke_capture" oc status --deep || step_failed=1
+  run_and_capture "$smoke_capture" oc channels status --probe --timeout 30000 || step_failed=1
   journalctl --user -u "$SERVICE_NAME" -n 120 --no-pager | tee -a "$LOG_FILE" >/dev/null || true
+
+  if smoke_output_has_gateway_failure "$smoke_capture"; then
+    log "Smoke checks detected gateway failure signature"
+    return "$PARTIAL_SUCCESS_EXIT_CODE"
+  fi
+
+  (( step_failed == 0 )) || return 1
 }
 
 verify_post_update(){
@@ -431,6 +460,7 @@ precheck(){
 }
 
 do_update(){
+  local smoke_rc=0
   log "=== UPDATE ==="
   precheck
   confirm "Proceed with update to ${TARGET_VERSION}?" || fail "Cancelled"
@@ -452,7 +482,14 @@ do_update(){
   systemctl --user restart "${SERVICE_NAME}.service"
   sleep 4
 
-  smoke_checks
+  smoke_checks || smoke_rc=$?
+  if [[ "$smoke_rc" -eq "$PARTIAL_SUCCESS_EXIT_CODE" ]]; then
+    log "PARTIAL SUCCESS - install ok, gateway failed -> ${TARGET_VERSION}"
+    return "$PARTIAL_SUCCESS_EXIT_CODE"
+  elif [[ "$smoke_rc" -ne 0 ]]; then
+    return "$smoke_rc"
+  fi
+
   check_cli_truth || fail "Final CLI truth check failed after update"
   check_version_sync || fail "Final version sync check failed after update"
   check_gateway_truth || fail "Final gateway truth check failed after update"

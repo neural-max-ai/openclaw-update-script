@@ -75,6 +75,7 @@ Rollback manually if needed:
 - Checks Node.js, npm, npm registry access and free disk space before install.
 - Requires available `sudo -n true` when `ASSUME_YES=1` is used for system installs.
 - Runs `openclaw doctor --fix --non-interactive --yes` during verify/smoke checks.
+- Blocks final `SUCCESS` when smoke output shows gateway failure signatures and reports `PARTIAL SUCCESS - install ok, gateway failed` instead.
 - Restores `~/.openclaw` through a staging directory during rollback.
 - Removes rollback staging trash after a successful rollback.
 

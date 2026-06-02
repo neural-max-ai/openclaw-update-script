@@ -64,6 +64,8 @@ Update flow:
 7. Run smoke checks, including `openclaw doctor --fix --non-interactive --yes`.
 8. Verify CLI/unit/gateway truth.
 
+If smoke output contains `Connectivity probe failed`, `RPC probe failed`, `ECONNREFUSED`, or `Gateway port is not listening`, the script must not print final `SUCCESS`. It reports `PARTIAL SUCCESS - install ok, gateway failed` instead.
+
 ## 4. Verify
 
 ```bash
