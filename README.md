@@ -38,24 +38,14 @@ Run precheck:
 
 ```bash
 ./openclaw_update_all.sh precheck
-```
-
-Update to latest resolved npm version:
-
-```bash
 ./openclaw_update_all.sh update
-```
-
-Update to a pinned version:
-
-```bash
-./openclaw_update_all.sh update 2026.5.28
-```
-
-Verify after update:
-
-```bash
 ./openclaw_update_all.sh verify
+```
+
+Optionally, you can pin a target version:
+
+```bash
+./openclaw_update_all.sh update 2026.5.22
 ```
 
 Rollback manually if needed:

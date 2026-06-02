@@ -40,16 +40,18 @@ Do not continue if precheck fails. Fix the reported problem first.
 
 ## 3. Update
 
-Latest resolved npm version:
+Main commands:
 
 ```bash
+./openclaw_update_all.sh precheck
 ./openclaw_update_all.sh update
+./openclaw_update_all.sh verify
 ```
 
-Pinned version:
+Optionally, you can pin a target version, for example:
 
 ```bash
-./openclaw_update_all.sh update 2026.5.28
+./openclaw_update_all.sh update 2026.5.22
 ```
 
 Update flow:
