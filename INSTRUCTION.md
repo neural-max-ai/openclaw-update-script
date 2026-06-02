@@ -63,7 +63,7 @@ Update flow:
    The script forces npm to use the exact prefix derived from the live gateway contour.
 5. Refresh gateway unit with `openclaw gateway install --force`.
 6. Restart `openclaw-gateway.service`.
-7. Run smoke checks, including `openclaw doctor --fix --non-interactive --yes`.
+7. Run read-only smoke checks.
 8. Verify CLI/unit/gateway truth.
 
 If smoke output contains `Connectivity probe failed`, `RPC probe failed`, `ECONNREFUSED`, or `Gateway port is not listening`, the script must not print final `SUCCESS`. It reports `PARTIAL SUCCESS - install ok, gateway failed` instead.
@@ -77,11 +77,18 @@ If smoke output contains `Connectivity probe failed`, `RPC probe failed`, `ECONN
 Verify checks:
 
 - gateway service is active
-- `openclaw gateway status`
-- `openclaw doctor --fix --non-interactive --yes`
+- `openclaw --version`
+- `openclaw gateway status --deep`
+- `openclaw health`
 - `openclaw status --deep`
 - `openclaw channels status --probe --timeout 30000`
 - CLI/unit/gateway version and contour sync
+
+Optional repair mode:
+
+```bash
+RUN_DOCTOR_FIX=1 ./openclaw_update_all.sh verify
+```
 
 ## 5. Rollback
 

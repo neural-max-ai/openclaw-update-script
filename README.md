@@ -78,7 +78,7 @@ Rollback manually if needed:
 - Uses a lock file to avoid parallel update/rollback runs.
 - Checks Node.js, npm, npm registry access and free disk space before install.
 - Requires available `sudo -n true` when `ASSUME_YES=1` is used for system installs.
-- Runs `openclaw doctor --fix --non-interactive --yes` during verify/smoke checks.
+- Keeps smoke/verify read-only by default; `openclaw doctor --fix --non-interactive --yes` runs only when `RUN_DOCTOR_FIX=1`.
 - Blocks final `SUCCESS` when smoke output shows gateway failure signatures and reports `PARTIAL SUCCESS - install ok, gateway failed` instead.
 - Restores `~/.openclaw` through a staging directory during rollback.
 - Removes rollback staging trash after a successful rollback.
@@ -97,6 +97,7 @@ Priority:
 ASSUME_YES=1       # non-interactive confirmation
 MIN_FREE_MB=1024   # minimum free disk space for HOME/install prefix
 MIN_NODE_MAJOR=20  # minimum Node.js major version
+RUN_DOCTOR_FIX=1   # optionally run doctor --fix during smoke/verify
 ```
 
 ## Logs And Backups

@@ -20,6 +20,7 @@ LOG_FILE="${LOG_DIR}/update-${TS}.log"
 MIN_FREE_MB="${MIN_FREE_MB:-1024}"
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-20}"
 PARTIAL_SUCCESS_EXIT_CODE=20
+RUN_DOCTOR_FIX="${RUN_DOCTOR_FIX:-0}"
 
 PATH_OPENCLAW_BIN=""
 PATH_OPENCLAW_REAL=""
@@ -71,10 +72,16 @@ quote_env_value(){
 
 get_unit_fragment_path(){ systemctl --user show -p FragmentPath --value "$SERVICE_NAME" 2>/dev/null || true; }
 get_unit_service_version(){
-  systemctl --user cat "$SERVICE_NAME" 2>/dev/null | sed -nE 's/.*OPENCLAW_SERVICE_VERSION="?([^"[:space:]]+)"?.*/\1/p' | head -n1 || true
+  systemctl --user cat "$SERVICE_NAME" 2>/dev/null \
+    | sed -nE 's/.*OPENCLAW_SERVICE_VERSION="?([^"[:space:]]+)"?.*/\1/p' \
+    | grep -v '^[[:space:]]*$' \
+    | tail -n1 || true
 }
 get_unit_execstart_line(){
-  systemctl --user cat "$SERVICE_NAME" 2>/dev/null | sed -n 's/^ExecStart=//p' | head -n1 || true
+  systemctl --user cat "$SERVICE_NAME" 2>/dev/null \
+    | sed -n 's/^ExecStart=//p' \
+    | grep -v '^[[:space:]]*$' \
+    | tail -n1 || true
 }
 
 run_and_capture(){
@@ -90,7 +97,9 @@ run_and_capture(){
 smoke_output_has_gateway_failure(){
   local capture_file="$1"
   [[ -f "$capture_file" ]] || return 1
-  grep -E 'Connectivity probe failed|RPC probe failed|ECONNREFUSED|Gateway port is not listening' "$capture_file" >/dev/null
+  grep -Eiq \
+    'Connectivity probe[:[:space:]]+failed|RPC probe[:[:space:]]+failed|ECONNREFUSED|connection refused|Gateway port .*is not listening|port .*is not listening|Gateway reachable[:[:space:]]+false|failed to connect|ETIMEDOUT|ECONNRESET|abnormal closure|pairing required|Telegram[:[:space:]]+failed|channels?.*failed' \
+    "$capture_file"
 }
 
 init_install_target_from_real(){
@@ -382,15 +391,19 @@ ensure_gateway_active(){
 smoke_checks(){
   local smoke_capture
   local step_failed=0
-  log "Smoke checks: service active + gateway status + doctor fix + deep status + channel probe"
+  log "Smoke checks: service active + CLI version + gateway deep status + health + deep status + channel probe"
   ensure_gateway_active "smoke checks"
 
   smoke_capture="$(mktemp "${BACKUP_ROOT}/smoke-${TS}-XXXXXX.log")"
 
-  run_and_capture "$smoke_capture" oc gateway status || step_failed=1
-  run_and_capture "$smoke_capture" oc doctor --fix --non-interactive --yes || step_failed=1
+  run_and_capture "$smoke_capture" oc --version || step_failed=1
+  run_and_capture "$smoke_capture" oc gateway status --deep || step_failed=1
+  run_and_capture "$smoke_capture" oc health || step_failed=1
   run_and_capture "$smoke_capture" oc status --deep || step_failed=1
   run_and_capture "$smoke_capture" oc channels status --probe --timeout 30000 || step_failed=1
+  if [[ "$RUN_DOCTOR_FIX" == "1" ]]; then
+    run_and_capture "$smoke_capture" oc doctor --fix --non-interactive --yes || step_failed=1
+  fi
   journalctl --user -u "$SERVICE_NAME" -n 120 --no-pager | tee -a "$LOG_FILE" >/dev/null || true
 
   if smoke_output_has_gateway_failure "$smoke_capture"; then
@@ -402,13 +415,17 @@ smoke_checks(){
 }
 
 verify_post_update(){
+  local smoke_rc=0
   log "=== VERIFY ==="
   ensure_gateway_active "verify"
-  oc --version | tee -a "$LOG_FILE" >/dev/null
-  oc gateway status | tee -a "$LOG_FILE" >/dev/null
-  oc doctor --fix --non-interactive --yes | tee -a "$LOG_FILE" >/dev/null
-  oc status --deep | tee -a "$LOG_FILE" >/dev/null
-  oc channels status --probe --timeout 30000 | tee -a "$LOG_FILE" >/dev/null
+
+  smoke_checks || smoke_rc=$?
+  if [[ "$smoke_rc" -eq "$PARTIAL_SUCCESS_EXIT_CODE" ]]; then
+    fail "Verify failed: gateway failure signature detected"
+  elif [[ "$smoke_rc" -ne 0 ]]; then
+    fail "Verify failed: smoke checks failed with code ${smoke_rc}"
+  fi
+
   check_cli_truth || fail "Verify failed: CLI path truth mismatch"
   check_version_sync || fail "Verify failed: CLI/unit version mismatch"
   check_gateway_truth || fail "Verify failed: gateway truth mismatch"
@@ -562,6 +579,7 @@ Options:
   ASSUME_YES=1   non-interactive confirmation
   MIN_FREE_MB=1024
   MIN_NODE_MAJOR=20
+  RUN_DOCTOR_FIX=1 run doctor --fix during smoke/verify
 
 Logs:
   ${LOG_DIR}/update-*.log
