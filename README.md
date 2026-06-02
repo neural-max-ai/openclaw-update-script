@@ -10,7 +10,7 @@ Supported Linux user-systemd npm installs:
 
 - system npm prefix: `/usr`
 - system npm prefix: `/usr/local`
-- current user npm prefix, including setups like `~/.npm-global`
+- current user npm prefix where OpenClaw lives under `<prefix>/lib/node_modules/openclaw`, including setups like `~/.npm-global`
 
 Intentionally not supported:
 
@@ -67,6 +67,7 @@ Rollback manually if needed:
 ## Safety Features
 
 - Resolves the active contour from `openclaw-gateway.service`.
+- Derives the npm install target from the active contour realpath and forces npm to use that exact prefix.
 - Verifies CLI version and gateway `OPENCLAW_SERVICE_VERSION` sync.
 - Creates a backup snapshot before update.
 - Writes rollback state with shell-safe quoting.

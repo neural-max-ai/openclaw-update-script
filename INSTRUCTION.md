@@ -58,6 +58,7 @@ Update flow:
 2. Ask for confirmation unless `ASSUME_YES=1`.
 3. Backup `~/.openclaw`, the gateway unit and recent gateway logs.
 4. Install `openclaw@TARGET_VERSION` into the detected install prefix.
+   The script forces npm to use the exact prefix derived from the live gateway contour.
 5. Refresh gateway unit with `openclaw gateway install --force`.
 6. Restart `openclaw-gateway.service`.
 7. Run smoke checks, including `openclaw doctor --fix --non-interactive --yes`.

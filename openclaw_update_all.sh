@@ -31,6 +31,8 @@ OPENCLAW_BIN=""
 OPENCLAW_REAL=""
 INSTALL_SCOPE=""
 INSTALL_PREFIX=""
+INSTALL_ROOT=""
+INSTALL_BIN_DIR=""
 INSTALL_USES_SUDO="0"
 UNIT_FRAGMENT_PATH=""
 ROLLBACK_PREVIOUS_OPENCLAW_DIR=""
@@ -72,6 +74,45 @@ get_unit_service_version(){
 }
 get_unit_execstart_line(){
   systemctl --user cat "$SERVICE_NAME" 2>/dev/null | sed -n 's/^ExecStart=//p' | head -n1 || true
+}
+
+init_install_target_from_real(){
+  local real_path="$1"
+  local derived_prefix=""
+
+  INSTALL_SCOPE=""
+  INSTALL_PREFIX=""
+  INSTALL_ROOT=""
+  INSTALL_BIN_DIR=""
+  INSTALL_USES_SUDO="0"
+  OPENCLAW_BIN=""
+
+  if [[ "$real_path" == /usr/lib/node_modules/openclaw/* ]]; then
+    INSTALL_SCOPE="system"
+    INSTALL_PREFIX="/usr"
+    INSTALL_USES_SUDO="1"
+  elif [[ "$real_path" == /usr/local/lib/node_modules/openclaw/* ]]; then
+    INSTALL_SCOPE="system"
+    INSTALL_PREFIX="/usr/local"
+    INSTALL_USES_SUDO="1"
+  elif [[ "$real_path" == */lib/node_modules/openclaw/* ]]; then
+    derived_prefix="${real_path%%/lib/node_modules/openclaw/*}"
+    [[ "$derived_prefix" == /* ]] || fail "Cannot derive npm prefix from working contour: ${real_path}"
+    INSTALL_SCOPE="user"
+    INSTALL_PREFIX="$derived_prefix"
+    INSTALL_USES_SUDO="0"
+  else
+    fail "Unsupported working contour for production updater: ${real_path}"
+  fi
+
+  INSTALL_ROOT="${INSTALL_PREFIX}/lib/node_modules"
+  INSTALL_BIN_DIR="${INSTALL_PREFIX}/bin"
+  OPENCLAW_BIN="${INSTALL_BIN_DIR}/openclaw"
+}
+
+npm_for_target(){
+  [[ -n "$INSTALL_PREFIX" ]] || fail "Install prefix is unresolved"
+  env PATH="$PATH" NPM_CONFIG_PREFIX="$INSTALL_PREFIX" npm "$@"
 }
 
 discover_cli_layout(){
@@ -120,34 +161,7 @@ PY
     fail "Cannot resolve working OpenClaw contour from systemd unit or PATH"
   fi
 
-  INSTALL_SCOPE=""
-  INSTALL_PREFIX=""
-  INSTALL_USES_SUDO="0"
-  OPENCLAW_BIN=""
-
-  if [[ "$OPENCLAW_REAL" == /usr/lib/node_modules/openclaw/* ]]; then
-    INSTALL_SCOPE="system"
-    INSTALL_PREFIX="/usr"
-    INSTALL_USES_SUDO="1"
-    OPENCLAW_BIN="/usr/bin/openclaw"
-  elif [[ "$OPENCLAW_REAL" == /usr/local/lib/node_modules/openclaw/* ]]; then
-    INSTALL_SCOPE="system"
-    INSTALL_PREFIX="/usr/local"
-    INSTALL_USES_SUDO="1"
-    OPENCLAW_BIN="/usr/local/bin/openclaw"
-  elif [[ -n "$NPM_GLOBAL_ROOT" && "$OPENCLAW_REAL" == "$NPM_GLOBAL_ROOT"/openclaw/* ]]; then
-    INSTALL_SCOPE="user"
-    INSTALL_PREFIX="$NPM_GLOBAL_PREFIX"
-    INSTALL_USES_SUDO="0"
-    OPENCLAW_BIN="${NPM_GLOBAL_BIN_DIR}/openclaw"
-  elif [[ "$OPENCLAW_REAL" == "${HOME}/.npm-global/lib/node_modules/openclaw/"* ]]; then
-    INSTALL_SCOPE="user"
-    INSTALL_PREFIX="${HOME}/.npm-global"
-    INSTALL_USES_SUDO="0"
-    OPENCLAW_BIN="${INSTALL_PREFIX}/bin/openclaw"
-  else
-    fail "Unsupported working contour for production updater: ${OPENCLAW_REAL}"
-  fi
+  init_install_target_from_real "$OPENCLAW_REAL"
 
   [[ -x "$OPENCLAW_BIN" ]] || fail "Expected canonical CLI not found: ${OPENCLAW_BIN}"
 }
@@ -180,7 +194,7 @@ log_cli_layout(){
   discover_cli_layout
   log "CLI layout: PATH_OPENCLAW_BIN=${PATH_OPENCLAW_BIN:-<missing>} PATH_REAL=${PATH_OPENCLAW_REAL:-<missing>} PATH_VER=${PATH_OPENCLAW_BIN:+$(get_path_cli_version)}"
   log "CLI layout: UNIT_OPENCLAW_ENTRY=${UNIT_OPENCLAW_ENTRY:-<missing>} UNIT_OPENCLAW_REAL=${UNIT_OPENCLAW_REAL:-<missing>}"
-  log "CLI layout: CANONICAL_OPENCLAW_BIN=${OPENCLAW_BIN:-<missing>} CANONICAL_REAL=${OPENCLAW_REAL:-<missing>} CANONICAL_VER=$(get_cli_version) INSTALL_SCOPE=${INSTALL_SCOPE} INSTALL_PREFIX=${INSTALL_PREFIX}"
+  log "CLI layout: CANONICAL_OPENCLAW_BIN=${OPENCLAW_BIN:-<missing>} CANONICAL_REAL=${OPENCLAW_REAL:-<missing>} CANONICAL_VER=$(get_cli_version) INSTALL_SCOPE=${INSTALL_SCOPE} INSTALL_PREFIX=${INSTALL_PREFIX} INSTALL_ROOT=${INSTALL_ROOT}"
 
   if [[ -n "$PATH_OPENCLAW_REAL" && -n "$UNIT_OPENCLAW_REAL" && "$PATH_OPENCLAW_REAL" != "$UNIT_OPENCLAW_REAL" ]]; then
     log "CLI path drift detected: PATH openclaw differs from unit contour"
@@ -271,22 +285,32 @@ check_version_sync(){
 }
 
 check_install_target(){
+  local target_prefix target_root
   discover_cli_layout
   [[ -n "$INSTALL_PREFIX" ]] || fail "Install prefix is unresolved"
+  [[ -n "$INSTALL_ROOT" ]] || fail "Install root is unresolved"
+  [[ "$OPENCLAW_REAL" == "$INSTALL_ROOT"/openclaw/* ]] || fail "Working contour is outside detected install root: ${OPENCLAW_REAL}"
+  [[ -x "$OPENCLAW_BIN" ]] || fail "Canonical CLI is not executable: ${OPENCLAW_BIN}"
+
+  target_prefix="$(npm_for_target prefix -g 2>/dev/null || true)"
+  target_root="$(npm_for_target root -g 2>/dev/null || true)"
+
+  [[ "$target_prefix" == "$INSTALL_PREFIX" ]] || fail "npm prefix mismatch for install target: expected ${INSTALL_PREFIX}, got ${target_prefix:-<empty>}"
+  [[ "$target_root" == "$INSTALL_ROOT" ]] || fail "npm root mismatch for install target: expected ${INSTALL_ROOT}, got ${target_root:-<empty>}"
 
   if [[ "$INSTALL_SCOPE" == "system" ]]; then
     need sudo
     if sudo -n true 2>/dev/null; then
-      log "Install target check OK: system install via ${INSTALL_PREFIX} (sudo cached)"
+      log "Install target check OK: system install via ${INSTALL_PREFIX} root=${INSTALL_ROOT} (sudo cached)"
     elif [[ "$ASSUME_YES" == "1" ]]; then
       fail "ASSUME_YES=1 requires passwordless/cached sudo for system install"
     else
-      log "Install target check: system install via ${INSTALL_PREFIX} (sudo will prompt if needed)"
+      log "Install target check: system install via ${INSTALL_PREFIX} root=${INSTALL_ROOT} (sudo will prompt if needed)"
     fi
   else
     [[ -d "$INSTALL_PREFIX" ]] || fail "User install prefix does not exist: ${INSTALL_PREFIX}"
     [[ -w "$INSTALL_PREFIX" ]] || fail "User install prefix is not writable: ${INSTALL_PREFIX}"
-    log "Install target check OK: user install via ${INSTALL_PREFIX}"
+    log "Install target check OK: user install via ${INSTALL_PREFIX} root=${INSTALL_ROOT}"
   fi
   return 0
 }
@@ -294,12 +318,11 @@ check_install_target(){
 run_npm_install(){
   local version="$1"
   discover_cli_layout
+  log "npm install target: ${INSTALL_SCOPE} prefix=${INSTALL_PREFIX} root=${INSTALL_ROOT}"
   if [[ "$INSTALL_USES_SUDO" == "1" ]]; then
-    log "npm install target: ${INSTALL_SCOPE} (${INSTALL_PREFIX})"
-    sudo env PATH="$PATH" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
+    sudo env PATH="$PATH" NPM_CONFIG_PREFIX="$INSTALL_PREFIX" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
   else
-    log "npm install target: ${INSTALL_SCOPE} (${INSTALL_PREFIX})"
-    env PATH="$PATH" NPM_CONFIG_PREFIX="$INSTALL_PREFIX" npm install -g "openclaw@${version}" | tee -a "$LOG_FILE"
+    npm_for_target install -g "openclaw@${version}" | tee -a "$LOG_FILE"
   fi
 }
 
@@ -381,6 +404,7 @@ backup_state(){
     printf 'UNIT_OPENCLAW_REAL=%s\n' "$(quote_env_value "$UNIT_OPENCLAW_REAL")"
     printf 'INSTALL_SCOPE=%s\n' "$(quote_env_value "$INSTALL_SCOPE")"
     printf 'INSTALL_PREFIX=%s\n' "$(quote_env_value "$INSTALL_PREFIX")"
+    printf 'INSTALL_ROOT=%s\n' "$(quote_env_value "$INSTALL_ROOT")"
   } >"$STATE_FILE"
   log "Backup completed: ${snap_dir}"
 }
