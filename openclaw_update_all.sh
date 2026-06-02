@@ -504,6 +504,7 @@ do_update(){
     log "PARTIAL SUCCESS - install ok, gateway failed -> ${TARGET_VERSION}"
     return "$PARTIAL_SUCCESS_EXIT_CODE"
   elif [[ "$smoke_rc" -ne 0 ]]; then
+    log "UPDATE FAILED - install ok, smoke checks failed -> ${TARGET_VERSION}"
     return "$smoke_rc"
   fi
 
