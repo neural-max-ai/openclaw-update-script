@@ -4,6 +4,8 @@ Production update and rollback helper for self-hosted OpenClaw gateway setups.
 
 The script is designed to update the real OpenClaw contour used by the user systemd gateway service, not a random `openclaw` binary found through `PATH`.
 
+Use this repository if you need an OpenClaw update script for Linux, a safe OpenClaw upgrade helper, or a rollback script for a self-hosted OpenClaw gateway installed via npm and user systemd.
+
 ## What It Supports
 
 Supported Linux user-systemd npm installs:
@@ -19,6 +21,18 @@ Intentionally not supported:
 - non-systemd service managers
 
 If the gateway unit does not look like a supported npm/systemd contour, `precheck` stops before update.
+
+## Search Terms
+
+People usually look for this repository with phrases like:
+
+- OpenClaw update script
+- OpenClaw upgrade script
+- OpenClaw rollback script
+- self-hosted OpenClaw updater
+- OpenClaw gateway update
+- OpenClaw npm update helper
+- OpenClaw systemd update
 
 ## Repository Contents
 
